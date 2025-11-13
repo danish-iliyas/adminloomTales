@@ -3,91 +3,195 @@ defined('BASEPATH') OR exit('No direct script access allowed');
 
 class Product_model extends CI_Model {
 
+    private $table = 'products';
+    private $image_table = 'product_images';
+    
+    // Allowed fields for creating/updating
+    private $allowed_fields = [
+        'ref_number', 
+        'title',
+        'product_type',
+        'price_text', 
+        'description', 
+        'size_feet', 
+        'size_cms', 
+        'material', 
+        'colour', 
+        'stock_status'
+    ];
+
     public function __construct() {
         parent::__construct();
         $this->load->database();
     }
 
     /**
-     * Get all products from the 'products' table.
+     * Get all products, including their images.
      */
     public function get_all_products() {
-        $query = $this->db->get('products');
+        $this->db->from($this->table);
+        $query = $this->db->get();
         $products = $query->result_array();
 
-        if (empty($products)) {
-            return [];
-        }
+        if (empty($products)) return [];
 
-        // Get all product IDs
-        $product_ids = [];
-        foreach ($products as $product) {
-            $product_ids[] = $product['id'];
-        }
+        $product_ids = array_column($products, 'id');
 
-        // Fetch all images for these product IDs in a single query
+        $this->db->from($this->image_table);
         $this->db->where_in('product_id', $product_ids);
-        $images_query = $this->db->get('product_images');
-        
-        // Map images to their product_id
-        $images_map = [];
-        if ($images_query->num_rows() > 0) {
-            foreach ($images_query->result_array() as $row) {
-                // This creates an array of images for each product_id
-                $images_map[$row['product_id']][] = $row['image_path'];
-            }
+        $image_query = $this->db->get();
+        $images = $image_query->result_array();
+
+        $image_map = [];
+        foreach ($images as $image) {
+            $image_map[$image['product_id']][] = $image['image_path'];
         }
 
-        // Attach images to their corresponding product
-        foreach ($products as $key => $product) {
-            if (isset($images_map[$product['id']])) {
-                $products[$key]['images'] = $images_map[$product['id']];
-            } else {
-                $products[$key]['images'] = []; // Ensure 'images' key always exists
-            }
+        foreach ($products as &$product) {
+            $product['images'] = isset($image_map[$product['id']]) ? $image_map[$product['id']] : [];
         }
 
         return $products;
     }
 
     /**
-     * Get a single product by its Reference Number.
-     * Fetches the product and all its associated images.
+     * ** NEW FUNCTION **
+     * Get a single product by its ID.
      */
-    public function get_product_by_ref($ref_number) {
-        
-        $this->db->where('ref_number', $ref_number);
-        $product_query = $this->db->get('products');
+    public function get_product_by_id($id) {
+        $this->db->from($this->table);
+        $this->db->where('id', $id);
+        $query = $this->db->get();
+        $product = $query->row_array();
 
-        if ($product_query->num_rows() > 0) {
-            $product = $product_query->row_array();
-            
+        if ($product) {
+            $this->db->from($this->image_table);
             $this->db->where('product_id', $product['id']);
-            $images_query = $this->db->get('product_images');
-            
-            $images = [];
-            if ($images_query->num_rows() > 0) {
-                foreach ($images_query->result_array() as $row) {
-                    $images[] = $row['image_path'];
-                }
-            }
-            
-            $product['images'] = $images;
-            return $product;
+            $image_query = $this->db->get();
+            $images = $image_query->result_array();
+            $product['images'] = array_column($images, 'image_path');
         }
-        
-        return false;
+        return $product;
     }
 
+    /**
+     * Get a single product by its Reference Number.
+     * (We keep this in case you need it elsewhere)
+     */
+    public function get_product_by_ref($ref_number) {
+        $this->db->from($this->table);
+        $this->db->where('ref_number', $ref_number);
+        $query = $this->db->get();
+        $product = $query->row_array();
+
+        if ($product) {
+            $this->db->from($this->image_table);
+            $this->db->where('product_id', $product['id']);
+            $image_query = $this->db->get();
+            $images = $image_query->result_array();
+            $product['images'] = array_column($images, 'image_path');
+        }
+        return $product;
+    }
+
+    /**
+     * Get all products by a specific type (e.g., "Shawl", "Carpet")
+     */
+  public function get_products_by_type($product_type, $limit, $offset) {
+    // --- 1. GET TOTAL COUNT FIRST ---
+    $this->db->from($this->table);
+    $this->db->where('product_type', $product_type);
+    $total_count = $this->db->count_all_results(); // This resets the query
+
+    if ($total_count == 0) {
+        return ['data' => [], 'total' => 0];
+    }
+
+    // --- 2. GET PAGINATED PRODUCTS ---
+    $this->db->from($this->table);
+    $this->db->where('product_type', $product_type);
+    $this->db->limit($limit, $offset);
+    $this->db->order_by('id', 'DESC'); // Good practice for consistent paging
+    $query = $this->db->get();
+    $products = $query->result_array();
+
+    if (empty($products)) {
+        return ['data' => [], 'total' => $total_count];
+    }
+
+    // --- 3. GET IMAGES (Your existing logic is good) ---
+    // This part is efficient as it only gets images for the paginated products
+    $product_ids = array_column($products, 'id');
+    
+    $this->db->from($this->image_table);
+    $this->db->where_in('product_id', $product_ids);
+    $image_query = $this->db->get();
+    $images = $image_query->result_array();
+
+    $image_map = [];
+    foreach ($images as $image) {
+        $image_map[$image['product_id']][] = $image['image_path'];
+    }
+
+    foreach ($products as &$product) {
+        $product['images'] = isset($image_map[$product['id']]) ? $image_map[$product['id']] : [];
+    }
+    
+    // --- 4. RETURN DATA AND TOTAL COUNT ---
+    return ['data' => $products, 'total' => $total_count];
+}
+
+/**
+ * NEW FUNCTION REQUIRED BY YOUR CONTROLLER
+ * Add this function to your Product_model.php
+ */
+public function get_all_products_paginated($limit, $offset) {
+    // 1. Get total count
+    $total_count = $this->db->count_all($this->table);
+
+    if ($total_count == 0) {
+        return ['data' => [], 'total' => 0];
+    }
+
+    // 2. Get paginated products
+    $this->db->from($this->table);
+    $this->db->limit($limit, $offset);
+    $this->db->order_by('id', 'DESC');
+    $query = $this->db->get();
+    $products = $query->result_array();
+
+    if (empty($products)) {
+        return ['data' => [], 'total' => $total_count];
+    }
+
+    // 3. Get images
+    $product_ids = array_column($products, 'id');
+    
+    $this->db->from($this->image_table);
+    $this->db->where_in('product_id', $product_ids);
+    $image_query = $this->db->get();
+    $images = $image_query->result_array();
+
+    $image_map = [];
+    foreach ($images as $image) {
+        $image_map[$image['product_id']][] = $image['image_path'];
+    }
+
+    foreach ($products as &$product) {
+        $product['images'] = isset($image_map[$product['id']]) ? $image_map[$product['id']] : [];
+    }
+
+    // 4. Return data and total
+    return ['data' => $products, 'total' => $total_count];
+}
     /**
      * Create a new product and add its images.
      */
     public function create_product($product_data, $image_paths) {
-        
-        // Filter for allowed product fields for security
-        $allowed_fields = ['ref_number', 'title', 'price_text', 'description', 'size_feet', 'size_cms', 'material', 'colour', 'stock_status'];
+        // Filter for allowed product fields
         $insert_data = [];
-        foreach ($allowed_fields as $field) {
+        // ** FIXED: Use the class property $this->allowed_fields **
+        foreach ($this->allowed_fields as $field) {
             if (isset($product_data[$field])) {
                 $insert_data[$field] = $product_data[$field];
             }
@@ -95,7 +199,7 @@ class Product_model extends CI_Model {
 
         $this->db->trans_start();
 
-        $this->db->insert('products', $insert_data);
+        $this->db->insert($this->table, $insert_data);
         $product_id = $this->db->insert_id();
 
         if ($product_id && !empty($image_paths)) {
@@ -106,27 +210,25 @@ class Product_model extends CI_Model {
                     'image_path' => $path
                 ];
             }
-            $this->db->insert_batch('product_images', $image_batch_data);
+            $this->db->insert_batch($this->image_table, $image_batch_data);
         }
 
         $this->db->trans_complete();
 
-        if ($this->db->trans_status() === FALSE) {
-            return false;
-        }
-
-        return $product_id;
+        return ($this->db->trans_status() === FALSE) ? false : $product_id;
     }
 
     /**
-     * Update an existing product by its Reference Number.
+     * ** NEW FUNCTION **
+     * Update an existing product by its ID.
      */
-    public function update_product($ref_number, $data) {
-        
-        // Filter for allowed product fields for security
-        $allowed_fields = ['title', 'price_text', 'description', 'size_feet', 'size_cms', 'material', 'colour', 'stock_status'];
+    public function update_product_by_id($id, $data) {
         $update_data = [];
-        foreach ($allowed_fields as $field) {
+        // ** FIXED: Use the class property $this->allowed_fields **
+        foreach ($this->allowed_fields as $field) {
+            // We can't update ref_number, so we skip it
+            if ($field === 'ref_number') continue;
+            
             if (isset($data[$field])) {
                 $update_data[$field] = $data[$field];
             }
@@ -136,21 +238,62 @@ class Product_model extends CI_Model {
             return false; // No valid fields to update
         }
 
-        $this->db->where('ref_number', $ref_number);
-        $this->db->update('products', $update_data);
+        $this->db->where('id', $id);
+        $this->db->update($this->table, $update_data);
         
         return $this->db->affected_rows() > 0;
     }
 
     /**
+     * (This is the old function, we keep it just in case)
+     * Update an existing product by its Reference Number.
+     */
+    public function update_product($ref_number, $data) {
+        $update_data = [];
+        foreach ($this->allowed_fields as $field) {
+            if ($field === 'ref_number') continue;
+            if (isset($data[$field])) {
+                $update_data[$field] = $data[$field];
+            }
+        }
+        if (empty($update_data)) return false;
+        $this->db->where('ref_number', $ref_number);
+        $this->db->update($this->table, $update_data);
+        return $this->db->affected_rows() > 0;
+    }
+
+
+    /**
+     * ** NEW FUNCTION **
+     * Delete a product by its ID.
+     */
+    public function delete_product_by_id($id) {
+        $this->db->trans_start();
+
+        // 1. Delete associated images
+        $this->db->where('product_id', $id);
+        $this->db->delete($this->image_table);
+        
+        // 2. Delete the product
+        $this->db->where('id', $id);
+        $this->db->delete($this->table);
+        
+        $this->db->trans_complete();
+
+        return ($this->db->trans_status() !== FALSE);
+    }
+
+    /**
+     * (This is the old function, we keep it just in case)
      * Delete a product by its Reference Number.
-     * The database's "ON DELETE CASCADE" will automatically
-     * delete all associated images from 'product_images'.
      */
     public function delete_product($ref_number) {
+        $this->db->select('id');
+        $this->db->from($this->table);
         $this->db->where('ref_number', $ref_number);
-        $this->db->delete('products');
-        
-        return $this->db->affected_rows() > 0;
+        $query = $this->db->get();
+        $product = $query->row_array();
+        if (!$product) return false;
+        return $this->delete_product_by_id($product['id']);
     }
 }
